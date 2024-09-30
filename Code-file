@@ -1,0 +1,68 @@
+from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.security import generate_password_hash, check_password_hash
+from itsdangerous import URLSafeTimedSerializer
+import os
+import jwt
+
+app = Flask(_name_)
+app.config['SECRET_KEY'] = 'mysecretkey'
+serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+
+# In-memory DB for demonstration
+users_db = []
+files_db = []
+
+# Helper Functions
+def create_jwt(user_id, user_type):
+    return jwt.encode({'user_id': user_id, 'user_type': user_type}, app.config['SECRET_KEY'], algorithm='HS256')
+
+def verify_jwt(token):
+    try:
+        return jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+    except:
+        return None
+
+# Routes for Authentication
+@app.route('/signup', methods=['POST'])
+def signup():
+    data = request.json
+    hashed_password = generate_password_hash(data['password'], method='sha256')
+    user = {'id': len(users_db) + 1, 'username': data['username'], 'email': data['email'], 'password_hash': hashed_password, 'user_type': 'client', 'is_verified': False}
+    users_db.append(user)
+    token = serializer.dumps(data['email'], salt='email-verify')
+    # In production, send email here
+    return jsonify({'message': 'User created. Please verify your email.', 'verification_url': f'http://localhost:5000/email-verify/{token}'})
+
+@app.route('/email-verify/<token>', methods=['GET'])
+def verify_email(token):
+    try:
+        email = serializer.loads(token, salt='email-verify', max_age=3600)
+        for user in users_db:
+            if user['email'] == email:
+                user['is_verified'] = True
+                return jsonify({'message': 'Email verified successfully!'})
+    except:
+        return jsonify({'message': 'Invalid or expired token.'})
+
+# Sample Ops User Upload Endpoint
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    token = request.headers.get('Authorization').split()[1]
+    user_data = verify_jwt(token)
+    if not user_data or user_data['user_type'] != 'ops':
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    file = request.files['file']
+    if file.filename.split('.')[-1] not in ['pptx', 'docx', 'xlsx']:
+        return jsonify({'message': 'Invalid file type'}), 400
+
+    # Save file and generate URL
+    file_path = os.path.join('uploads', file.filename)
+    file.save(file_path)
+    encrypted_url = serializer.dumps(file.filename, salt='file-access')
+    file_entry = {'id': len(files_db) + 1, 'file_name': file.filename, 'uploaded_by': user_data['user_id'], 'file_path': file_path, 'encrypted_url': encrypted_url}
+    files_db.append(file_entry)
+    return jsonify({'message': 'File uploaded successfully!', 'file_id': file_entry['id']})
+
+if _name_ == '_main_':
+    app.run(debug=True)
